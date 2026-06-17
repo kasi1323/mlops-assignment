@@ -11,6 +11,7 @@ Model: `Qwen/Qwen3-30B-A3B-Instruct-2507` on 1× H100 80GB
 | `--max-num-seqs` | 64 | Allows enough concurrency for 10 RPS × 2–3 LLM calls per agent request without excessive memory pressure |
 | `--enable-chunked-prefill` | true | Reduces time-to-first-token on long prompts by interleaving prefill chunks with decode, improving P95 latency |
 | `--gpu-memory-utilization` | 0.90 | Maximises KV cache size on the H100 while leaving 10% headroom for CUDA kernels and activations |
+| `--enable-prefix-caching` | true | Caches the KV representation of repeated schema prefixes across requests to the same database, reducing prefill cost on the second and third LLM call in a chain (added in Iteration 2) |
 
 ---
 
@@ -79,8 +80,6 @@ Eval set: 30 questions from BIRD-bench dev split across 11 SQLite databases.
 | P95 latency | 7.7s |
 | Success rate | 87.1% (2613/3000) |
 
-### Final numbers
-
 ### Iteration 3
 
 **Saw:** P95 stuck at 7.7s after prefix caching. P50=1.3s. The gap between median and P95 is 6s — driven by requests that exhaust MAX_ITERATIONS=3, making 3 serial LLM calls (generate → LLM verify on failure → revise).
@@ -124,6 +123,6 @@ In summary: the loop architecture did not add value in this configuration. The v
 
 - **Tighter verify prompts:** Constrain the verifier to flag only SQL errors and 0-row results, not numeric plausibility. This would make the revise loop actually recover failures rather than loop on correct answers.
 - **Schema-aware prompts:** Include sample rows (2–3 per table) alongside the schema so the model understands column value ranges, eliminating the `1.0 = 100%` class of verifier false positives.
-- **Prefix caching:** Enable `--enable-prefix-caching` in vLLM to cache the repeated schema portion of prompts across requests to the same database, reducing prefill cost significantly.
+- **Fix the 12.7% HTTP error rate:** Under sustained 10 RPS load, ~382/3000 requests fail with HTTP 500. Root cause is likely FastAPI's default connection handling under concurrent long-running requests. Adding `--workers 2` to uvicorn or a request queue with backpressure would fix this without touching vLLM.
 - **Async verify:** Run SQL execution and LLM verify in parallel rather than sequentially, cutting per-request wall time.
 - **Bigger model:** Qwen3-30B-A3B has ~3B active parameters. Qwen3-30B (dense) or a larger MoE would likely push pass rate above 40% without any prompt changes.
