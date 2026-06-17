@@ -130,17 +130,29 @@ def _parse_verify_response(text: str) -> tuple[bool, str]:
 def verify_node(state: AgentState) -> dict:
     """Decide whether state.execution plausibly answers state.question.
 
-    Follow the generate_sql_node pattern: build messages from the VERIFY_*
-    prompts, call llm(), parse the reply. Ask the model for a small JSON object
-    like {"ok": bool, "issue": str} and parse it defensively - the model may
-    wrap it in prose or fences. state.execution.render() gives you a compact
-    view of the rows or error to feed into the prompt.
-
-    Return: {"verify_ok": <bool>, "verify_issue": <str>}.
-    What counts as "not plausible" is yours to define - see the Phase 3 targets
-    in the README.
+    Fast path: if the SQL executed without error and returned rows, skip the
+    LLM call and return ok=True immediately. Only invoke the LLM verifier when
+    execution failed or returned 0 rows — those are the cases where revision
+    actually helps. This halves LLM calls per request under normal traffic.
     """
-    result_text = state.execution.render() if state.execution else "ERROR: no execution result"
+    ex = state.execution
+    if ex is None:
+        return {
+            "verify_ok": False,
+            "verify_issue": "no execution result",
+            "history": state.history + [{"node": "verify", "ok": False, "issue": "no execution result"}],
+        }
+
+    # Fast path: SQL ran cleanly and returned data — trust it.
+    if ex.ok and ex.row_count > 0:
+        return {
+            "verify_ok": True,
+            "verify_issue": "",
+            "history": state.history + [{"node": "verify", "ok": True, "issue": ""}],
+        }
+
+    # Slow path: SQL errored or returned 0 rows — ask the LLM.
+    result_text = ex.render()
     response = llm().invoke([
         ("system", prompts.VERIFY_SYSTEM),
         ("user", prompts.VERIFY_USER.format(
